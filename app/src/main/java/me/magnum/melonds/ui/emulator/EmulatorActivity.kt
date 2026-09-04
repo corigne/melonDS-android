@@ -720,6 +720,7 @@ class EmulatorActivity : AppCompatActivity() {
         cancelPendingLidPause()
         choreographerFrameRenderer.startRendering()
         emulatorMotionManager.resume()
+        viewModel.syncRtcOnAppResume()
 
         if (!activeOverlays.hasActiveOverlays()) {
             disableScreenTimeOut()

@@ -465,6 +465,9 @@ void MelonInstance::releaseKey(u32 key)
     // Special handling for Lid input
     if (key == 16 + 7)
     {
+        if (currentConfiguration->syncRtcOnLidOpen)
+            setDateTime();
+
         nds->SetLidClosed(false);
     }
     else
@@ -472,6 +475,11 @@ void MelonInstance::releaseKey(u32 key)
         inputMask |= (1 << key);
         nds->SetKeyMask(inputMask);
     }
+}
+
+void MelonInstance::syncRtcToSystem()
+{
+    setDateTime();
 }
 
 int MelonInstance::readAudioOutput(s16* buffer, int length)

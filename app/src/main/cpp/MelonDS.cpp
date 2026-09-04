@@ -196,6 +196,12 @@ namespace MelonDSAndroid
             instance->updateMotionData(ax, ay, az, rx, ry, rz);
     }
 
+    void syncRtcToSystem()
+    {
+        if (instance)
+            instance->syncRtcToSystem();
+    }
+
     void start()
     {
         startAudio();
@@ -396,4 +402,3 @@ namespace MelonDSAndroid
         openGlContext->Release();
     }
 }
-
