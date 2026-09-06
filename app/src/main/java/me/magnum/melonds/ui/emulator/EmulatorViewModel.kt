@@ -525,7 +525,7 @@ class EmulatorViewModel @Inject constructor(
         deviceSleepTransitionActive = false
     }
 
-    suspend fun finishDeviceSleepTransition(resumeEmulation: Boolean): Boolean {
+    suspend fun finishDeviceSleepPreparation() {
         sleepPreparationJob?.let { job ->
             if (!sleepPreparationStarted) {
                 job.cancel()
@@ -536,7 +536,6 @@ class EmulatorViewModel @Inject constructor(
                 sleepPreparationStarted = false
             }
         }
-        return resumeAfterDeviceSleep(resumeEmulation)
     }
 
     suspend fun prepareForDeviceSleep(): Boolean = sleepTransitionMutex.withLock {

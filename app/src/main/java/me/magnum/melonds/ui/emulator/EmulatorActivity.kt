@@ -49,6 +49,7 @@ import androidx.window.layout.FoldingFeature
 import androidx.window.layout.WindowInfoTracker
 import com.squareup.picasso.Picasso
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.launch
@@ -287,6 +288,7 @@ class EmulatorActivity : AppCompatActivity() {
     private val showAchievementList = mutableStateOf(false)
     private val showPendingSubmissionsDialog = mutableStateOf(false)
     private var recoveryDialog: AlertDialog? = null
+    private var deviceSleepResumeJob: Job? = null
     private var screenOffObserved = false
     private val screenStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -795,11 +797,16 @@ class EmulatorActivity : AppCompatActivity() {
         screenOffObserved = false
 
         if (viewModel.isDeviceSleepTransitionActive()) {
-            lifecycleScope.launch {
+            deviceSleepResumeJob?.cancel()
+            deviceSleepResumeJob = lifecycleScope.launch {
                 try {
-                    melonTouchHandler.setLidClosed(false)
                     val shouldResume = !activeOverlays.hasActiveOverlays()
-                    if (viewModel.finishDeviceSleepTransition(shouldResume)) {
+                    viewModel.finishDeviceSleepPreparation()
+                    if (!lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) || isScreenOff()) {
+                        return@launch
+                    }
+                    melonTouchHandler.setLidClosed(false)
+                    if (viewModel.resumeAfterDeviceSleep(shouldResume)) {
                         choreographerFrameRenderer.startRendering()
                         emulatorMotionManager.resume()
                         if (shouldResume) {
@@ -807,7 +814,9 @@ class EmulatorActivity : AppCompatActivity() {
                         }
                     }
                 } finally {
-                    stopService(Intent(this@EmulatorActivity, LidCloseService::class.java))
+                    if (!isScreenOff()) {
+                        stopService(Intent(this@EmulatorActivity, LidCloseService::class.java))
+                    }
                 }
             }
         } else {
@@ -1229,6 +1238,8 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        deviceSleepResumeJob?.cancel()
+        deviceSleepResumeJob = null
         enableScreenTimeOut()
         emulatorMotionManager.pause()
         if (isScreenOff() && viewModel.emulatorState.value.isRunning()) {
@@ -1266,6 +1277,7 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        deviceSleepResumeJob?.cancel()
         handler.removeCallbacks(pauseAfterLidCloseRunnable)
         if (isFinishing || !viewModel.isDeviceSleepTransitionActive()) {
             stopService(Intent(this, LidCloseService::class.java))
