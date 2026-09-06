@@ -1,7 +1,9 @@
 package me.magnum.melonds.ui.emulator
 
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.Configuration
 import android.hardware.display.DisplayManager
 import android.hardware.input.InputManager
@@ -59,6 +61,7 @@ import me.magnum.melonds.domain.model.ControllerConfiguration
 import me.magnum.melonds.domain.model.FpsCounterPosition
 import me.magnum.melonds.domain.model.Rect
 import me.magnum.melonds.domain.model.SaveStateSlot
+import me.magnum.melonds.domain.model.emulator.EmulatorEvent
 import me.magnum.melonds.domain.model.layout.Insets
 import me.magnum.melonds.domain.model.layout.LayoutComponent
 import me.magnum.melonds.domain.model.layout.ScreenFold
@@ -69,6 +72,9 @@ import me.magnum.melonds.domain.model.ui.Orientation
 import me.magnum.melonds.extensions.insetsControllerCompat
 import me.magnum.melonds.extensions.setLayoutOrientation
 import me.magnum.melonds.impl.emulator.LifecycleOwnerProvider
+import me.magnum.melonds.impl.emulator.recovery.RecoveryCause
+import me.magnum.melonds.impl.emulator.recovery.RecoveryProcessExitReason
+import me.magnum.melonds.impl.emulator.recovery.RecoveryPrompt
 import me.magnum.melonds.impl.layout.DeviceLayoutDisplayMapper
 import me.magnum.melonds.impl.layout.SecondaryDisplaySelector
 import me.magnum.melonds.impl.system.AppForegroundStateObserver
@@ -107,7 +113,9 @@ import me.magnum.melonds.ui.emulator.ui.RewindWindowUi
 import me.magnum.melonds.ui.layouteditor.model.LayoutTarget
 import me.magnum.melonds.ui.settings.SettingsActivity
 import me.magnum.melonds.ui.theme.MelonTheme
+import java.text.DateFormat
 import java.text.SimpleDateFormat
+import java.util.Date
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -118,7 +126,6 @@ class EmulatorActivity : AppCompatActivity() {
         const val KEY_URI = "uri"
         const val KEY_BOOT_FIRMWARE_CONSOLE = "boot_firmware_console"
         const val KEY_BOOT_FIRMWARE_ONLY = "boot_firmware_only"
-
         fun getRomEmulatorActivityIntent(context: Context, rom: Rom): Intent {
             return Intent(context, EmulatorActivity::class.java).apply {
                 putExtra(KEY_ROM, RomParcelable(rom))
@@ -195,7 +202,6 @@ class EmulatorActivity : AppCompatActivity() {
     private lateinit var choreographerFrameRenderer: ChoreographerFrameRenderer
     private lateinit var mainScreenRenderer: DSRenderer
     private lateinit var melonTouchHandler: MelonTouchHandler
-    private var lidClosedByScreenOff = false
     private lateinit var nativeInputListener: INativeInputListener
     private val frontendInputHandler = object : FrontendInputHandler() {
         var fastForwardEnabled = false
@@ -263,6 +269,14 @@ class EmulatorActivity : AppCompatActivity() {
             }
         }
     }
+    private val diagnosticExportLauncher = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { destination ->
+        if (destination != null) {
+            viewModel.exportRecoveryDiagnostics(destination)
+        }
+        viewModel.recoveryPrompt.value?.let(::showRecoveryDialog)
+    }
     private val backPressedCallback = object : OnBackPressedCallback(false) {
         override fun handleOnBackPressed() {
             handleBackPressed()
@@ -272,7 +286,16 @@ class EmulatorActivity : AppCompatActivity() {
     private val rewindWindowState = mutableStateOf<RewindWindowState>(RewindWindowState.Hidden)
     private val showAchievementList = mutableStateOf(false)
     private val showPendingSubmissionsDialog = mutableStateOf(false)
-
+    private var recoveryDialog: AlertDialog? = null
+    private var screenOffObserved = false
+    private val screenStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> screenOffObserved = true
+                Intent.ACTION_SCREEN_ON -> screenOffObserved = false
+            }
+        }
+    }
     private val activeOverlays = EmulatorOverlayTracker(
         onOverlaysCleared = {
             disableScreenTimeOut()
@@ -484,9 +507,24 @@ class EmulatorActivity : AppCompatActivity() {
                         ToastEvent.CannotSwitchRetroAchievementsMode -> R.string.retro_achievements_relaunch_to_apply_settings to Toast.LENGTH_LONG
                         ToastEvent.GbaModeNotSupported -> R.string.emulator_stop_gba_mode_unsupported to Toast.LENGTH_SHORT
                         ToastEvent.InternalError -> R.string.emulator_stop_internal_error to Toast.LENGTH_LONG
+                        ToastEvent.RecoveryDiagnosticsExported -> R.string.recovery_export_success to Toast.LENGTH_SHORT
+                        ToastEvent.RecoveryDiagnosticsExportFailed -> R.string.recovery_export_failed to Toast.LENGTH_LONG
+                        ToastEvent.RecoveryCheckpointFailed -> R.string.recovery_pause_timeout to Toast.LENGTH_LONG
                     }
 
                     Toast.makeText(this@EmulatorActivity, message, duration).show()
+                }
+            }
+        }
+        lifecycleScope.launch {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.recoveryPrompt.collectLatest { prompt ->
+                    if (prompt == null) {
+                        recoveryDialog?.dismiss()
+                        recoveryDialog = null
+                    } else {
+                        showRecoveryDialog(prompt)
+                    }
                 }
             }
         }
@@ -562,6 +600,13 @@ class EmulatorActivity : AppCompatActivity() {
                         }
                         EmulatorState.LoadingFirmware,
                         EmulatorState.LoadingRom -> showLoadingState()
+                        EmulatorState.RecoveryPending -> {
+                            choreographerFrameRenderer.stopRendering()
+                            binding.viewLayoutControls.isInvisible = true
+                            binding.textFps.isGone = true
+                            binding.textLoading.isGone = true
+                            backPressedCallback.isEnabled = false
+                        }
                         is EmulatorState.RunningRom,
                         is EmulatorState.RunningFirmware -> {
                             setupSustainedPerformanceMode()
@@ -584,6 +629,20 @@ class EmulatorActivity : AppCompatActivity() {
                             binding.textFps.isGone = true
                             binding.textLoading.isGone = true
                             showFirmwareLoadErrorDialog(it)
+                        }
+                        EmulatorState.FirmwareStartError -> {
+                            binding.viewLayoutControls.isInvisible = true
+                            binding.textFps.isGone = true
+                            binding.textLoading.isGone = true
+                            AlertDialog.Builder(this@EmulatorActivity)
+                                .setCancelable(false)
+                                .setTitle(R.string.error_load_firmware)
+                                .setMessage(R.string.emulator_start_failed)
+                                .setPositiveButton(R.string.ok) { dialog, _ ->
+                                    dialog.dismiss()
+                                    finish()
+                                }
+                                .show()
                         }
                         is EmulatorState.RomNotFoundError -> {
                             binding.viewLayoutControls.isInvisible = true
@@ -625,6 +684,16 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        val screenStateFilter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+        }
+        ContextCompat.registerReceiver(
+            this,
+            screenStateReceiver,
+            screenStateFilter,
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         updateDisplays()
         getSystemService<DisplayManager>()?.registerDisplayListener(displayListener, null)
         getSystemService<InputManager>()?.registerInputDeviceListener(connectedControllerManager, null)
@@ -717,19 +786,37 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        cancelPendingLidPause()
-        choreographerFrameRenderer.startRendering()
-        emulatorMotionManager.resume()
-        viewModel.syncRtcOnAppResume()
+        handler.removeCallbacks(pauseAfterLidCloseRunnable)
+        if (viewModel.recoveryPrompt.value != null) {
+            viewModel.abortDeviceSleepTransition()
+            stopService(Intent(this, LidCloseService::class.java))
+            return
+        }
+        screenOffObserved = false
 
-        if (!activeOverlays.hasActiveOverlays()) {
-            disableScreenTimeOut()
-            viewModel.resumeEmulator()
-        
-            // Open the virtual lid only if the device actually went to sleep (not on app switch, etc)
-            if (lidClosedByScreenOff) {
-                lidClosedByScreenOff = false
-                melonTouchHandler.setLidClosed(false)
+        if (viewModel.isDeviceSleepTransitionActive()) {
+            lifecycleScope.launch {
+                try {
+                    melonTouchHandler.setLidClosed(false)
+                    val shouldResume = !activeOverlays.hasActiveOverlays()
+                    if (viewModel.finishDeviceSleepTransition(shouldResume)) {
+                        choreographerFrameRenderer.startRendering()
+                        emulatorMotionManager.resume()
+                        if (shouldResume) {
+                            disableScreenTimeOut()
+                        }
+                    }
+                } finally {
+                    stopService(Intent(this@EmulatorActivity, LidCloseService::class.java))
+                }
+            }
+        } else {
+            choreographerFrameRenderer.startRendering()
+            emulatorMotionManager.resume()
+            if (!activeOverlays.hasActiveOverlays()) {
+                disableScreenTimeOut()
+                viewModel.syncRtcOnAppResume()
+                viewModel.resumeEmulator()
             }
         }
     }
@@ -1002,6 +1089,118 @@ class EmulatorActivity : AppCompatActivity() {
         viewModel.resumeEmulator()
     }
 
+    private fun showRecoveryDialog(prompt: RecoveryPrompt) {
+        recoveryDialog?.dismiss()
+
+        val causeMessage = when (val cause = prompt.cause) {
+            is RecoveryCause.EmulatorStopped -> getString(R.string.recovery_emulator_stop, cause.reason)
+            is RecoveryCause.ProcessExit -> {
+                val exitReason = getProcessExitReasonDescription(
+                    cause.reason,
+                    cause.rawReason,
+                    cause.status,
+                )
+                getString(R.string.recovery_process_exit, exitReason)
+            }
+            is RecoveryCause.ProcessRecreated -> getString(R.string.recovery_unknown_exit)
+            is RecoveryCause.RestoreFailed -> getString(R.string.recovery_restore_failed)
+        }
+        val checkpointMessage = if (prompt.checkpointAvailable) {
+            val checkpointDate = Date(prompt.session.checkpointCreatedAt ?: prompt.session.startedAt)
+            getString(
+                R.string.recovery_checkpoint_available,
+                DateFormat.getDateTimeInstance().format(checkpointDate),
+            )
+        } else {
+            getString(R.string.recovery_checkpoint_unavailable)
+        }
+        val hardcoreWarning = if (prompt.checkpointAvailable && prompt.session.hardcoreEnabled) {
+            "\n\n${getString(R.string.recovery_hardcore_warning)}"
+        } else {
+            ""
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle(R.string.recovery_title)
+            .setMessage("$causeMessage\n\n$checkpointMessage$hardcoreWarning")
+            .setCancelable(false)
+
+        if (prompt.checkpointAvailable) {
+            builder
+                .setPositiveButton(R.string.recovery_restore) { _, _ -> viewModel.restoreRecovery() }
+                .setNegativeButton(R.string.recovery_restart) { _, _ -> viewModel.restartRecovery() }
+                .setNeutralButton(R.string.recovery_more_options) { _, _ ->
+                    showRecoveryMoreOptions()
+                }
+        } else {
+            builder
+                .setPositiveButton(R.string.recovery_restart) { _, _ -> viewModel.restartRecovery() }
+                .setNegativeButton(R.string.recovery_exit) { _, _ -> viewModel.exitRecovery() }
+                .setNeutralButton(R.string.recovery_export) { _, _ -> exportRecoveryDiagnostics() }
+        }
+
+        recoveryDialog = builder.show()
+    }
+
+    private fun showRecoveryMoreOptions() {
+        recoveryDialog = AlertDialog.Builder(this)
+            .setTitle(R.string.recovery_more_options)
+            .setItems(
+                arrayOf(
+                    getString(R.string.recovery_export),
+                    getString(R.string.recovery_exit),
+                )
+            ) { _, index ->
+                when (index) {
+                    0 -> exportRecoveryDiagnostics()
+                    1 -> viewModel.exitRecovery()
+                }
+            }
+            .setNegativeButton(R.string.cancel) { _, _ ->
+                viewModel.recoveryPrompt.value?.let(::showRecoveryDialog)
+            }
+            .setOnCancelListener {
+                viewModel.recoveryPrompt.value?.let(::showRecoveryDialog)
+            }
+            .show()
+    }
+
+    private fun exportRecoveryDiagnostics() {
+        val timestamp = System.currentTimeMillis()
+        diagnosticExportLauncher.launch("melonds-diagnostics-$timestamp.zip")
+    }
+
+    private fun getProcessExitReasonDescription(
+        reason: RecoveryProcessExitReason,
+        rawReason: Int,
+        status: Int,
+    ): String {
+        return when (reason) {
+            RecoveryProcessExitReason.ANR -> getString(R.string.recovery_exit_anr)
+            RecoveryProcessExitReason.CRASH -> getString(R.string.recovery_exit_java_crash)
+            RecoveryProcessExitReason.NATIVE_CRASH -> getString(R.string.recovery_exit_native_crash)
+            RecoveryProcessExitReason.EXCESSIVE_RESOURCE_USAGE ->
+                getString(R.string.recovery_exit_resource_limit)
+            RecoveryProcessExitReason.SELF_EXIT -> getString(R.string.recovery_exit_self)
+            RecoveryProcessExitReason.FREEZER -> getString(R.string.recovery_exit_freezer)
+            RecoveryProcessExitReason.INITIALIZATION_FAILURE ->
+                getString(R.string.recovery_exit_initialization)
+            RecoveryProcessExitReason.LOW_MEMORY -> getString(R.string.recovery_exit_low_memory)
+            RecoveryProcessExitReason.PERMISSION_CHANGE ->
+                getString(R.string.recovery_exit_permission_change)
+            RecoveryProcessExitReason.SIGNALED -> {
+                if (status == 9) {
+                    getString(R.string.recovery_exit_sigkill)
+                } else {
+                    getString(R.string.recovery_exit_signal, status)
+                }
+            }
+            RecoveryProcessExitReason.USER_REQUESTED -> getString(R.string.recovery_exit_user_requested)
+            RecoveryProcessExitReason.USER_STOPPED -> getString(R.string.recovery_exit_user_stopped)
+            RecoveryProcessExitReason.UNKNOWN -> getString(R.string.recovery_exit_unknown, rawReason)
+        }
+    }
+
     private fun showLoadingState() {
         binding.viewLayoutControls.isInvisible = true
         binding.textFps.isGone = true
@@ -1022,27 +1221,21 @@ class EmulatorActivity : AppCompatActivity() {
 
     private val pauseAfterLidCloseRunnable = Runnable {
         choreographerFrameRenderer.stopRendering()
-        viewModel.pauseEmulator(false)
-        stopService(Intent(this, LidCloseService::class.java))
     }
 
     private fun isScreenOff(): Boolean {
-        return getSystemService<PowerManager>()?.isInteractive == false
-    }
-
-    private fun cancelPendingLidPause() {
-        handler.removeCallbacks(pauseAfterLidCloseRunnable)
-        stopService(Intent(this, LidCloseService::class.java))
+        return screenOffObserved || getSystemService<PowerManager>()?.isInteractive == false
     }
 
     override fun onPause() {
         super.onPause()
         enableScreenTimeOut()
         emulatorMotionManager.pause()
-        if (isScreenOff()) {
-            lidClosedByScreenOff = true
+        if (isScreenOff() && viewModel.emulatorState.value.isRunning()) {
+            viewModel.notifyDeviceSleepStarted()
             melonTouchHandler.setLidClosed(true)
-            startForegroundService(Intent(this, LidCloseService::class.java))
+            ContextCompat.startForegroundService(this, Intent(this, LidCloseService::class.java))
+            viewModel.scheduleDeviceSleepPreparation(lidClosePauseDelayMs)
 
             // Delay pausing the emulator just enough to let games play sounds after closing the lid
             handler.postDelayed(pauseAfterLidCloseRunnable, lidClosePauseDelayMs)
@@ -1064,6 +1257,7 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        unregisterReceiver(screenStateReceiver)
         getSystemService<DisplayManager>()?.unregisterDisplayListener(displayListener)
         getSystemService<InputManager>()?.unregisterInputDeviceListener(connectedControllerManager)
         connectedControllerManager.stopTrackingControllers()
@@ -1072,6 +1266,11 @@ class EmulatorActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        handler.removeCallbacks(pauseAfterLidCloseRunnable)
+        if (isFinishing || !viewModel.isDeviceSleepTransitionActive()) {
+            stopService(Intent(this, LidCloseService::class.java))
+        }
+        recoveryDialog?.dismiss()
         emulatorMotionManager.stop()
         frameRenderCoordinator.stop()
         presentation?.dismiss()

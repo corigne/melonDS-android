@@ -35,6 +35,11 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Run unit tests
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:testGitHubProdDebugUnitTest
+
       - name: Build melonDS Android
         env:
           MELONDS_KEYSTORE: ${{ secrets.MELONDS_KEYSTORE }}
@@ -50,7 +55,6 @@ jobs:
           echo "MELONDS_KEYSTORE_PASSWORD=$MELONDS_KEYSTORE_PASSWORD" >> local.properties
           echo "MELONDS_KEY_ALIAS=melonds" >> local.properties
           echo "MELONDS_KEY_PASSWORD=$MELONDS_KEYSTORE_PASSWORD" >> local.properties
-          chmod +x ./gradlew
           ./gradlew :app:assembleGitHubNightlyRelease
           git tag -m "Nightly Release" -f -a nightly-release
           git push -f origin refs/tags/nightly-release
