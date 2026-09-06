@@ -201,6 +201,7 @@ class AndroidEmulatorManager(
 
     override suspend fun resetEmulator() = withContext(Dispatchers.IO) {
         MelonEmulator.resetEmulation()
+        MelonEmulator.resumeEmulation()
     }
 
     override suspend fun updateCheats(cheats: List<Cheat>) {
