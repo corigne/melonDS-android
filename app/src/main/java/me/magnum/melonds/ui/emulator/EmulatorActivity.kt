@@ -620,6 +620,9 @@ class EmulatorActivity : AppCompatActivity() {
                             if (it is EmulatorState.RunningRom) {
                                 startMotionManagerIfNeeded(it.rom)
                             }
+                            if (handleDeviceSleepTransition()) {
+                                return@collectLatest
+                            }
                             if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                                 !activeOverlays.hasActiveOverlays()
                             ) {
@@ -1243,21 +1246,37 @@ class EmulatorActivity : AppCompatActivity() {
         return screenOffObserved || getSystemService<PowerManager>()?.isInteractive == false
     }
 
+    private fun handleDeviceSleepTransition(): Boolean {
+        return when (
+            deviceSleepTransitionAction(
+                screenOff = isScreenOff(),
+                emulatorRunning = viewModel.emulatorState.value.isRunning(),
+                transitionActive = viewModel.isDeviceSleepTransitionActive(),
+            )
+        ) {
+            DeviceSleepTransitionAction.IGNORE -> false
+            DeviceSleepTransitionAction.KEEP_ACTIVE -> true
+            DeviceSleepTransitionAction.START -> {
+                viewModel.notifyDeviceSleepStarted()
+                melonTouchHandler.setLidClosed(true)
+                ContextCompat.startForegroundService(this, Intent(this, LidCloseService::class.java))
+                viewModel.scheduleDeviceSleepPreparation(lidClosePauseDelayMs)
+
+                // Delay pausing the emulator just enough to let games play sounds after closing the lid
+                handler.removeCallbacks(pauseAfterLidCloseRunnable)
+                handler.postDelayed(pauseAfterLidCloseRunnable, lidClosePauseDelayMs)
+                true
+            }
+        }
+    }
+
     override fun onPause() {
         super.onPause()
         deviceSleepResumeJob?.cancel()
         deviceSleepResumeJob = null
         enableScreenTimeOut()
         emulatorMotionManager.pause()
-        if (isScreenOff() && viewModel.emulatorState.value.isRunning()) {
-            viewModel.notifyDeviceSleepStarted()
-            melonTouchHandler.setLidClosed(true)
-            ContextCompat.startForegroundService(this, Intent(this, LidCloseService::class.java))
-            viewModel.scheduleDeviceSleepPreparation(lidClosePauseDelayMs)
-
-            // Delay pausing the emulator just enough to let games play sounds after closing the lid
-            handler.postDelayed(pauseAfterLidCloseRunnable, lidClosePauseDelayMs)
-        } else { // App switch, etc.
+        if (!handleDeviceSleepTransition()) { // App switch, etc.
             choreographerFrameRenderer.stopRendering()
             viewModel.pauseEmulator(false)
         }
