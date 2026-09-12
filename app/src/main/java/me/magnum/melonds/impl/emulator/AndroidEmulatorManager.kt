@@ -187,10 +187,6 @@ class AndroidEmulatorManager(
         return MelonEmulator.getEmulationStatus()
     }
 
-    override suspend fun syncRtcToSystem() = withContext(Dispatchers.IO) {
-        MelonEmulator.syncRtcToSystem()
-    }
-
     override suspend fun setLidClosed(closed: Boolean) = withContext(Dispatchers.IO) {
         if (closed) {
             MelonEmulator.onInputDown(Input.HINGE)

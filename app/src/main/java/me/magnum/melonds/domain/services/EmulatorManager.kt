@@ -36,8 +36,6 @@ interface EmulatorManager {
 
     fun getEmulatorStatus(): MelonEmulator.EmulationStatus
 
-    suspend fun syncRtcToSystem()
-
     suspend fun setLidClosed(closed: Boolean)
 
     suspend fun resetEmulator()

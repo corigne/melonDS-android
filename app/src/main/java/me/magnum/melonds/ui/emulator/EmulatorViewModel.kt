@@ -517,16 +517,6 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    fun syncRtcOnAppResume() {
-        if (!_emulatorState.value.isRunning() || !settingsRepository.isRtcSyncOnLidOpenEnabled()) {
-            return
-        }
-
-        sessionCoroutineScope.launch {
-            emulatorManager.syncRtcToSystem()
-        }
-    }
-
     fun notifyDeviceSleepStarted() {
         if (_emulatorState.value.isRunning() && !deviceSleepTransitionActive) {
             deviceSleepTransitionActive = true
@@ -637,17 +627,12 @@ class EmulatorViewModel @Inject constructor(
             return@withLock false
         }
 
-        val rtcSynced = settingsRepository.isRtcSyncOnLidOpenEnabled()
-        if (rtcSynced) {
-            emulatorManager.syncRtcToSystem()
-        }
         if (resumeEmulation) {
             emulatorManager.resumeEmulator()
         }
         emulatorRecoveryRepository.markDeviceSleepResumed(
             mapOf(
                 "status" to status.name,
-                "rtcSynced" to rtcSynced,
                 "emulationResumed" to resumeEmulation,
             ),
         )
@@ -767,9 +752,6 @@ class EmulatorViewModel @Inject constructor(
             return false
         }
 
-        if (settingsRepository.isRtcSyncOnLidOpenEnabled()) {
-            emulatorManager.syncRtcToSystem()
-        }
         emulatorManager.setLidClosed(false)
 
         if (prompt.session.hardcoreEnabled && !automaticRecoveryInProgress) {

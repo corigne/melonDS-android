@@ -117,8 +117,6 @@ object MelonEmulator {
 
 	external fun resumeEmulation()
 
-    external fun syncRtcToSystem()
-
     external fun resetEmulation()
 
 	external fun stopEmulation()

@@ -465,9 +465,6 @@ void MelonInstance::releaseKey(u32 key)
     // Special handling for Lid input
     if (key == 16 + 7)
     {
-        if (currentConfiguration->syncRtcOnLidOpen)
-            setDateTime();
-
         nds->SetLidClosed(false);
     }
     else

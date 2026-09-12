@@ -23,9 +23,9 @@
             android:defaultValue="true" />
 
     <SwitchPreference
-            android:key="sync_rtc_on_lid_open"
-            android:title="@string/sync_rtc_on_lid_open"
-            android:summary="@string/sync_rtc_on_lid_open_summary"
+            android:key="sync_rtc_on_resume"
+            android:title="@string/sync_rtc_on_resume"
+            android:summary="@string/sync_rtc_on_resume_summary"
             app:iconSpaceReserved="false"
             android:defaultValue="false" />
 

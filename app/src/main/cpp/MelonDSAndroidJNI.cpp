@@ -713,15 +713,6 @@ Java_me_magnum_melonds_MelonEmulator_updateMotionData(JNIEnv* env, jobject thiz,
     MelonDSAndroid::updateMotionData(ax, ay, az, rx, ry, rz);
 }
 
-JNIEXPORT void JNICALL
-Java_me_magnum_melonds_MelonEmulator_syncRtcToSystem(JNIEnv* env, jobject thiz)
-{
-    if (beginSynchronizedOperation()) {
-        MelonDSAndroid::syncRtcToSystem();
-        endSynchronizedOperation();
-    }
-}
-
 JNIEXPORT jint JNICALL
 Java_me_magnum_melonds_MelonEmulator_getEmulationStatusInternal(JNIEnv* env, jobject thiz)
 {

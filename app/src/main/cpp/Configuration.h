@@ -74,7 +74,7 @@ typedef struct
     float fastForwardSpeedMultiplier;
     bool showBootScreen;
     bool useJit;
-    bool syncRtcOnLidOpen;
+    bool syncRtcOnResume;
     int consoleType;
     AudioSettings audioSettings;
     int rewindEnabled;

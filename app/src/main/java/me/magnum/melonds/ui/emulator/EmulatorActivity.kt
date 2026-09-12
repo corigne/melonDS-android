@@ -840,7 +840,6 @@ class EmulatorActivity : AppCompatActivity() {
             emulatorMotionManager.resume()
             if (!activeOverlays.hasActiveOverlays()) {
                 disableScreenTimeOut()
-                viewModel.syncRtcOnAppResume()
                 viewModel.resumeEmulator()
             }
         }

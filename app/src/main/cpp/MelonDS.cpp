@@ -196,12 +196,6 @@ namespace MelonDSAndroid
             instance->updateMotionData(ax, ay, az, rx, ry, rz);
     }
 
-    void syncRtcToSystem()
-    {
-        if (instance)
-            instance->syncRtcToSystem();
-    }
-
     void start()
     {
         startAudio();
@@ -231,6 +225,9 @@ namespace MelonDSAndroid
 
     void resume()
     {
+        if (instance && currentConfiguration && currentConfiguration->syncRtcOnResume)
+            instance->syncRtcToSystem();
+
         startAudio();
     }
 
