@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Process
 import android.os.SystemClock
+import android.provider.Settings
 import android.util.AtomicFile
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +49,8 @@ class EmulatorRecoveryRepository(private val context: Context) {
 
         val cause = when {
             session.stopReason != null -> RecoveryCause.EmulatorStopped(session.stopReason)
+            session.deviceBootCount != null && session.deviceBootCount != currentBootCount() ->
+                RecoveryCause.ProcessRecreated("device_restarted")
             session.processToken != processToken -> classifyPreviousProcessExit(session)
             else -> return@synchronized null
         }
@@ -89,6 +92,7 @@ class EmulatorRecoveryRepository(private val context: Context) {
             checkpointCreatedAt = null,
             stopReason = null,
             automaticRecoveryAttempted = false,
+            deviceBootCount = currentBootCount(),
         )
         synchronized(lock) {
             deleteCheckpoints()
@@ -118,6 +122,7 @@ class EmulatorRecoveryRepository(private val context: Context) {
             checkpointCreatedAt = null,
             stopReason = null,
             automaticRecoveryAttempted = false,
+            deviceBootCount = currentBootCount(),
         )
         synchronized(lock) {
             deleteCheckpoints()
@@ -426,6 +431,14 @@ class EmulatorRecoveryRepository(private val context: Context) {
         return context.packageManager.getPackageInfo(context.packageName, 0).longVersionCode
     }
 
+    private fun currentBootCount(): Int? {
+        return Settings.Global.getInt(
+            context.contentResolver,
+            Settings.Global.BOOT_COUNT,
+            -1,
+        ).takeIf { it >= 0 }
+    }
+
     private fun addTextEntry(zip: ZipOutputStream, name: String, text: String) {
         addBytesEntry(zip, name, text.toByteArray())
     }
@@ -520,10 +533,11 @@ data class RecoverySession(
     val checkpointCreatedAt: Long?,
     val stopReason: String?,
     val automaticRecoveryAttempted: Boolean,
+    val deviceBootCount: Int? = null,
 ) {
     fun toJson(): JSONObject {
         return JSONObject()
-            .put("schemaVersion", 3)
+            .put("schemaVersion", 4)
             .put("id", id)
             .put("processToken", processToken)
             .put("processId", processId)
@@ -542,6 +556,7 @@ data class RecoverySession(
             .put("checkpointCreatedAt", checkpointCreatedAt)
             .put("stopReason", stopReason)
             .put("automaticRecoveryAttempted", automaticRecoveryAttempted)
+            .put("deviceBootCount", deviceBootCount)
     }
 
     companion object {
@@ -565,6 +580,7 @@ data class RecoverySession(
                 checkpointCreatedAt = json.optLong("checkpointCreatedAt").takeIf { it > 0L },
                 stopReason = json.optString("stopReason").takeIf { it.isNotEmpty() && it != "null" },
                 automaticRecoveryAttempted = json.optBoolean("automaticRecoveryAttempted"),
+                deviceBootCount = json.optInt("deviceBootCount", -1).takeIf { it >= 0 },
             )
         }
     }

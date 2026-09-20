@@ -476,9 +476,9 @@
     <string name="achievements_unlocked_compact">Unlocked: %1$d/%2$d</string>
     <string name="game_has_no_achievements">This game has no achievements</string>
     <string name="achievements_failed_load">Failed to load achievements!</string>
-    <string name="achievements_failed_load_tip">Make sure you are Online</string>
+    <string name="achievements_failed_load_tip">Tap to retry the connection</string>
     <string name="achievements_login_expired">RetroAchievements login expired!</string>
-    <string name="achievements_login_expired_tip">Log in again to enable RetroAchievements</string>
+    <string name="achievements_login_expired_tip">Tap to log in again</string>
     <string name="achievement_unlocked">Achievement unlocked!</string>
     <string name="achievement_missable">Missable</string>
     <string name="achievement_missable_description">This achievement can be missed during a playthrough</string>

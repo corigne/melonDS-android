@@ -64,8 +64,7 @@ internal fun canAutomaticallyRestore(
 ): Boolean {
     if (session.automaticRecoveryAttempted ||
         !session.sleeping ||
-        !checkpointAvailable ||
-        cause !is RecoveryCause.ProcessExit
+        !checkpointAvailable
     ) {
         return false
     }
@@ -74,11 +73,16 @@ internal fun canAutomaticallyRestore(
     if (checkpointCreatedAt < sleepStartedAt) {
         return false
     }
-    return cause.reason !in setOf(
-        RecoveryProcessExitReason.USER_REQUESTED,
-        RecoveryProcessExitReason.USER_STOPPED,
-        RecoveryProcessExitReason.UNKNOWN,
-    )
+
+    return when (cause) {
+        is RecoveryCause.ProcessExit -> cause.reason !in setOf(
+            RecoveryProcessExitReason.USER_REQUESTED,
+            RecoveryProcessExitReason.USER_STOPPED,
+            RecoveryProcessExitReason.UNKNOWN,
+        )
+        is RecoveryCause.ProcessRecreated -> cause.detail == "device_restarted"
+        else -> false
+    }
 }
 
 internal fun shouldDiscardRecovery(cause: RecoveryCause): Boolean {
