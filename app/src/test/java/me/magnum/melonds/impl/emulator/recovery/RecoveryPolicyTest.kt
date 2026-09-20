@@ -88,6 +88,24 @@ class RecoveryPolicyTest {
     }
 
     @Test
+    fun deviceRestartRestoresSleepingCheckpointWithoutExitRecord() {
+        assertTrue(
+            canAutomaticallyRestore(
+                session = session(),
+                cause = RecoveryCause.ProcessRecreated("device_restarted"),
+                checkpointAvailable = true,
+            ),
+        )
+        assertFalse(
+            canAutomaticallyRestore(
+                session = session(),
+                cause = RecoveryCause.ProcessRecreated("no_matching_exit_record"),
+                checkpointAvailable = true,
+            ),
+        )
+    }
+
+    @Test
     fun selectsOnlyExitRecordsFromCurrentSession() {
         val currentExit = RecoveryProcessExit(
             timestamp = 20L,
@@ -193,6 +211,7 @@ class RecoveryPolicyTest {
             checkpointCreatedAt = checkpointCreatedAt,
             stopReason = null,
             automaticRecoveryAttempted = automaticRecoveryAttempted,
+            deviceBootCount = 1,
         )
     }
 

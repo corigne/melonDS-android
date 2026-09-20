@@ -124,6 +124,9 @@ class EmulatorViewModel @Inject constructor(
     private val retroAchievementsSubmissionHandler: RetroAchievementsSubmissionHandler,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
+    private companion object {
+        const val TAG = "EmulatorViewModel"
+    }
 
     private val sessionCoroutineScope = EmulatorSessionCoroutineScope()
     private val sleepTransitionMutex = Mutex()
@@ -133,6 +136,8 @@ class EmulatorViewModel @Inject constructor(
     private var sleepCheckpointFailed = false
     private var deviceSleepTransitionActive = false
     private var sleepPreparationJob: Job? = null
+    private var sleepPreparationStarted = false
+    private var openLidAfterRecovery = false
 
     private val _emulatorState = MutableStateFlow<EmulatorState>(EmulatorState.Uninitialized)
     val emulatorState = _emulatorState.asStateFlow()
@@ -309,7 +314,9 @@ class EmulatorViewModel @Inject constructor(
         startObservingEmulatorEvents()
         startObservingAchievementEvents()
         startObservingLayoutForRom(rom)
-        startRetroAchievementsSession(rom)
+        if (recovery == null) {
+            startRetroAchievementsSession(rom)
+        }
 
         val cheats = getRomInfo(rom)?.let { getRomEnabledCheats(it) } ?: emptyList()
         val result = emulatorManager.loadRom(rom, cheats)
@@ -330,6 +337,15 @@ class EmulatorViewModel @Inject constructor(
                 if (!result.isGbaLoadSuccessful) {
                     _toastEvent.tryEmit(ToastEvent.GbaLoadFailed)
                 }
+                val recoveryAchievementData = if (recovery != null) {
+                    prepareRetroAchievementsData(rom).also { achievementData ->
+                        if (achievementData.isRetroAchievementsIntegrationEnabled) {
+                            emulatorManager.setupRetroAchievements(achievementData)
+                        }
+                    }
+                } else {
+                    null
+                }
                 if (recovery != null && !restoreCheckpoint(recovery)) {
                     return@coroutineScope
                 }
@@ -347,8 +363,16 @@ class EmulatorViewModel @Inject constructor(
                     )
                     pendingRecoveryRestore = null
                     automaticRecoveryInProgress = false
+                    openLidAfterRecovery = true
                 }
                 _emulatorState.value = EmulatorState.RunningRom(rom)
+                if (recoveryAchievementData != null) {
+                    startRetroAchievementsSession(
+                        rom = rom,
+                        preparedAchievementData = recoveryAchievementData,
+                        setupNativeData = false,
+                    )
+                }
                 startTrackingFps()
                 startTrackingPlayTime(rom)
             }
@@ -510,6 +534,14 @@ class EmulatorViewModel @Inject constructor(
         return deviceSleepTransitionActive
     }
 
+    fun consumeOpenLidAfterRecovery(): Boolean {
+        if (!openLidAfterRecovery) {
+            return false
+        }
+        openLidAfterRecovery = false
+        return true
+    }
+
     fun abortDeviceSleepTransition() {
         sleepPreparationJob?.cancel()
         sleepPreparationJob = null
@@ -525,36 +557,45 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    suspend fun prepareForDeviceSleep(): Boolean = sleepTransitionMutex.withLock {
+    suspend fun prepareForDeviceSleep(): Boolean {
+        if (!_emulatorState.value.isRunning()) {
+            return false
+        }
+
+        return saveRecoveryCheckpoint(
+            eventPrefix = "device_sleep",
+        ).also { committed ->
+            sleepCheckpointFailed = !committed
+        }
+    }
+
+    private suspend fun saveRecoveryCheckpoint(
+        eventPrefix: String,
+    ): Boolean = sleepTransitionMutex.withLock {
         if (!_emulatorState.value.isRunning()) {
             return@withLock false
         }
 
-        emulatorRecoveryRepository.record("device_sleep_pause_requested")
+        emulatorRecoveryRepository.record("${eventPrefix}_pause_requested")
         val pauseResult = emulatorManager.pauseEmulator()
         if (pauseResult != MelonEmulator.PauseResult.SUCCESS &&
             pauseResult != MelonEmulator.PauseResult.ALREADY_PAUSED
         ) {
-            sleepCheckpointFailed = true
             emulatorRecoveryRepository.record(
-                "device_sleep_pause_failed",
+                "${eventPrefix}_pause_failed",
                 mapOf("result" to pauseResult.name),
             )
             return@withLock false
         }
 
-        emulatorRecoveryRepository.record("device_sleep_pause_acknowledged")
+        emulatorRecoveryRepository.record("${eventPrefix}_pause_acknowledged")
         val checkpointUri = emulatorRecoveryRepository.checkpointTempUri()
-        val checkpointSaved = emulatorManager.saveState(checkpointUri)
-        if (!checkpointSaved) {
-            sleepCheckpointFailed = true
+        if (!emulatorManager.saveState(checkpointUri)) {
             emulatorRecoveryRepository.record("checkpoint_failed", mapOf("reason" to "native_save_failed"))
             return@withLock false
         }
 
-        emulatorRecoveryRepository.commitCheckpoint().also { committed ->
-            sleepCheckpointFailed = !committed
-        }
+        emulatorRecoveryRepository.commitCheckpoint()
     }
 
     suspend fun resumeAfterDeviceSleep(resumeEmulation: Boolean = true): Boolean = sleepTransitionMutex.withLock {
@@ -1161,6 +1202,7 @@ class EmulatorViewModel @Inject constructor(
                 }
             },
             onFailure = {
+                Log.e(TAG, "Failed to load RetroAchievements data", it)
                 // Maybe we have the game summary cached. Could allow the icon to be displayed, which looks better
                 val gameSummary = retroAchievementsRepository.getGameSummary(rom.retroAchievementsHash)
                 GameAchievementData.withDisabledRetroAchievementsIntegration(GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR, gameSummary?.icon)
@@ -1249,57 +1291,75 @@ class EmulatorViewModel @Inject constructor(
         }
     }
 
-    private fun startRetroAchievementsSession(rom: Rom) {
-        sessionCoroutineScope.launch {
-            val achievementData = getRomAchievementData(rom)
-            emulatorSession.updateRetroAchievementsIntegrationStatus(achievementData.retroAchievementsIntegrationStatus)
-            if (!achievementData.isRetroAchievementsIntegrationEnabled) {
-                if (achievementData.retroAchievementsIntegrationStatus == GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR) {
-                    _raIntegrationEvent.trySend(RAIntegrationEvent.Failed(achievementData.icon))
-                } else if (achievementData.retroAchievementsIntegrationStatus == GameAchievementData.IntegrationStatus.DISABLED_LOGIN_EXPIRED) {
-                    _raIntegrationEvent.trySend(RAIntegrationEvent.LoginExpired(achievementData.icon))
-                }
+    fun retryRetroAchievementsConnection() {
+        val rom = (emulatorSession.currentSessionType() as? EmulatorSession.SessionType.RomSession)?.rom ?: return
+        startRetroAchievementsSession(rom)
+    }
 
+    private suspend fun prepareRetroAchievementsData(rom: Rom): GameAchievementData {
+        val achievementData = getRomAchievementData(rom)
+        emulatorSession.updateRetroAchievementsIntegrationStatus(achievementData.retroAchievementsIntegrationStatus)
+        if (!achievementData.isRetroAchievementsIntegrationEnabled) {
+            if (achievementData.retroAchievementsIntegrationStatus == GameAchievementData.IntegrationStatus.DISABLED_LOAD_ERROR) {
+                _raIntegrationEvent.trySend(RAIntegrationEvent.Failed(achievementData.icon))
+            } else if (achievementData.retroAchievementsIntegrationStatus == GameAchievementData.IntegrationStatus.DISABLED_LOGIN_EXPIRED) {
+                _raIntegrationEvent.trySend(RAIntegrationEvent.LoginExpired(achievementData.icon))
+            }
+        }
+        return achievementData
+    }
+
+    private fun startRetroAchievementsSession(
+        rom: Rom,
+        preparedAchievementData: GameAchievementData? = null,
+        setupNativeData: Boolean = true,
+    ) {
+        raSessionJob?.cancel()
+        raSessionJob = sessionCoroutineScope.launch {
+            val achievementData = preparedAchievementData ?: prepareRetroAchievementsData(rom)
+            if (!achievementData.isRetroAchievementsIntegrationEnabled) {
                 return@launch
             }
 
-            raSessionJob = launch {
-                // Wait until the emulator has actually started
-                ensureEmulatorIsRunning().firstOrNull()
+            // Wait until the emulator has actually started
+            ensureEmulatorIsRunning().firstOrNull()
 
-                val isHardcoreModeEnabled = emulatorSession.isRetroAchievementsHardcoreModeEnabled
-                val startResult = retroAchievementsRepository.startSession(rom.retroAchievementsHash, isHardcoreModeEnabled)
-                if (startResult.isFailure) {
-                    if (startResult.exceptionOrNull() is UserTokenExpiredException) {
-                        _raIntegrationEvent.trySend(RAIntegrationEvent.LoginExpired(achievementData.icon))
-                    } else {
-                        _raIntegrationEvent.trySend(RAIntegrationEvent.Failed(achievementData.icon))
-                    }
+            val isHardcoreModeEnabled = emulatorSession.isRetroAchievementsHardcoreModeEnabled
+            val startResult = retroAchievementsRepository.startSession(rom.retroAchievementsHash, isHardcoreModeEnabled)
+            if (startResult.isFailure) {
+                val error = startResult.exceptionOrNull()
+                Log.e(TAG, "Failed to start RetroAchievements session", error)
+                if (error is UserTokenExpiredException) {
+                    _raIntegrationEvent.trySend(RAIntegrationEvent.LoginExpired(achievementData.icon))
                 } else {
-                    launch {
-                        retroAchievementsSubmissionHandler.startEmulatorSession().collect(_achievementsEvent)
-                    }
+                    _raIntegrationEvent.trySend(RAIntegrationEvent.Failed(achievementData.icon))
+                }
+            } else {
+                launch {
+                    retroAchievementsSubmissionHandler.startEmulatorSession().collect(_achievementsEvent)
+                }
 
+                if (setupNativeData) {
                     emulatorManager.setupRetroAchievements(achievementData)
-                    if (achievementData.hasAchievements) {
-                        _raIntegrationEvent.trySend(
-                            RAIntegrationEvent.Loaded(
-                                icon = achievementData.icon,
-                                unlockedAchievements = achievementData.unlockedAchievementCount,
-                                totalAchievements = achievementData.totalAchievementCount,
-                            )
+                }
+                if (achievementData.hasAchievements) {
+                    _raIntegrationEvent.trySend(
+                        RAIntegrationEvent.Loaded(
+                            icon = achievementData.icon,
+                            unlockedAchievements = achievementData.unlockedAchievementCount,
+                            totalAchievements = achievementData.totalAchievementCount,
                         )
-                    } else {
-                        _raIntegrationEvent.trySend(RAIntegrationEvent.LoadedNoAchievements(achievementData.icon))
-                    }
+                    )
+                } else {
+                    _raIntegrationEvent.trySend(RAIntegrationEvent.LoadedNoAchievements(achievementData.icon))
+                }
 
-                    delay(30.seconds)
-                    while (isActive) {
-                        // TODO: Should we pause the session if the app goes to background? If so, how?
-                        val richPresenceDescription = MelonEmulator.getRichPresenceStatus()
-                        retroAchievementsRepository.sendSessionHeartbeat(rom.retroAchievementsHash, isHardcoreModeEnabled, richPresenceDescription)
-                        delay(2.minutes)
-                    }
+                delay(30.seconds)
+                while (isActive) {
+                    // TODO: Should we pause the session if the app goes to background? If so, how?
+                    val richPresenceDescription = MelonEmulator.getRichPresenceStatus()
+                    retroAchievementsRepository.sendSessionHeartbeat(rom.retroAchievementsHash, isHardcoreModeEnabled, richPresenceDescription)
+                    delay(2.minutes)
                 }
             }
         }

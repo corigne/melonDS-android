@@ -389,7 +389,10 @@ class EmulatorActivity : AppCompatActivity() {
                     }
                 }
 
-                AchievementUpdatesUi(viewModel)
+                AchievementUpdatesUi(
+                    viewModel = viewModel,
+                    onLogin = ::openRetroAchievementsSettings,
+                )
 
                 RewindWindowUi(
                     state = rewindWindowState.value,
@@ -623,6 +626,9 @@ class EmulatorActivity : AppCompatActivity() {
                             if (handleDeviceSleepTransition()) {
                                 return@collectLatest
                             }
+                            if (!isScreenOff() && viewModel.consumeOpenLidAfterRecovery()) {
+                                melonTouchHandler.setLidClosed(false)
+                            }
                             if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                                 !activeOverlays.hasActiveOverlays()
                             ) {
@@ -840,6 +846,16 @@ class EmulatorActivity : AppCompatActivity() {
             it.hide(WindowInsetsCompat.Type.navigationBars())
             it.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
         }
+    }
+
+    private fun openRetroAchievementsSettings() {
+        val settingsIntent = Intent(this, SettingsActivity::class.java).apply {
+            putExtra(
+                SettingsActivity.KEY_ENTRY_POINT,
+                SettingsActivity.RETRO_ACHIEVEMENTS_ENTRY_POINT,
+            )
+        }
+        settingsLauncher.launch(settingsIntent)
     }
 
     private fun startMotionManagerIfNeeded(rom: Rom) {
