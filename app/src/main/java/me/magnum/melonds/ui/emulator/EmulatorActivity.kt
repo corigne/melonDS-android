@@ -637,7 +637,6 @@ class EmulatorActivity : AppCompatActivity() {
                                 melonTouchHandler.setLidClosed(false)
                                 choreographerFrameRenderer.startRendering()
                                 emulatorMotionManager.resume()
-                                stopService(Intent(this@EmulatorActivity, LidCloseService::class.java))
                             }
                             if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                                 !activeOverlays.hasActiveOverlays()
