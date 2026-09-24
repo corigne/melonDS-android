@@ -20,3 +20,11 @@ internal fun deviceSleepTransitionAction(
         DeviceSleepTransitionAction.START
     }
 }
+
+internal fun shouldActivateRecoveredDisplay(
+    recoveryActivationPending: Boolean,
+    screenOff: Boolean,
+    activityResumed: Boolean,
+): Boolean {
+    return recoveryActivationPending && !screenOff && activityResumed
+}

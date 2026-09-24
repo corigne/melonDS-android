@@ -137,7 +137,7 @@ class EmulatorViewModel @Inject constructor(
     private var deviceSleepTransitionActive = false
     private var sleepPreparationJob: Job? = null
     private var sleepPreparationStarted = false
-    private var openLidAfterRecovery = false
+    private var recoveryDisplayActivationPending = false
 
     private val _emulatorState = MutableStateFlow<EmulatorState>(EmulatorState.Uninitialized)
     val emulatorState = _emulatorState.asStateFlow()
@@ -207,6 +207,7 @@ class EmulatorViewModel @Inject constructor(
         if (automaticRecoveryStarted) {
             automaticRecoveryInProgress = true
             pendingRecoveryRestore = recovery
+            requestRecoveryDisplayActivation("automatic_restore")
             launchRecoverySession(recovery.session)
         } else if (recovery != null) {
             withContext(Dispatchers.IO) {
@@ -363,7 +364,6 @@ class EmulatorViewModel @Inject constructor(
                     )
                     pendingRecoveryRestore = null
                     automaticRecoveryInProgress = false
-                    openLidAfterRecovery = true
                 }
                 _emulatorState.value = EmulatorState.RunningRom(rom)
                 if (recoveryAchievementData != null) {
@@ -543,12 +543,25 @@ class EmulatorViewModel @Inject constructor(
         return deviceSleepTransitionActive
     }
 
-    fun consumeOpenLidAfterRecovery(): Boolean {
-        if (!openLidAfterRecovery) {
+    fun isRecoveryDisplayActivationPending(): Boolean {
+        return recoveryDisplayActivationPending
+    }
+
+    fun consumeRecoveryDisplayActivation(): Boolean {
+        if (!recoveryDisplayActivationPending) {
             return false
         }
-        openLidAfterRecovery = false
+        recoveryDisplayActivationPending = false
+        emulatorRecoveryRepository.record("recovery_display_activated")
         return true
+    }
+
+    private fun requestRecoveryDisplayActivation(reason: String) {
+        recoveryDisplayActivationPending = true
+        emulatorRecoveryRepository.record(
+            "recovery_display_activation_requested",
+            mapOf("reason" to reason),
+        )
     }
 
     fun abortDeviceSleepTransition() {
@@ -652,6 +665,7 @@ class EmulatorViewModel @Inject constructor(
 
         pendingRecoveryRestore = prompt
         automaticRecoveryInProgress = false
+        requestRecoveryDisplayActivation("user_restore")
         _recoveryPrompt.value = null
         launchRecoverySession(prompt.session)
     }
@@ -660,6 +674,7 @@ class EmulatorViewModel @Inject constructor(
         val prompt = _recoveryPrompt.value ?: return
         pendingRecoveryRestore = null
         automaticRecoveryInProgress = false
+        requestRecoveryDisplayActivation("user_restart")
         _recoveryPrompt.value = null
         emulatorRecoveryRepository.discardRecovery("user_selected_restart")
         launchRecoverySession(prompt.session)
@@ -668,6 +683,7 @@ class EmulatorViewModel @Inject constructor(
     fun exitRecovery() {
         pendingRecoveryRestore = null
         automaticRecoveryInProgress = false
+        recoveryDisplayActivationPending = false
         _recoveryPrompt.value = null
         emulatorManager.stopEmulator()
         emulatorRecoveryRepository.discardRecovery("user_selected_exit")
@@ -766,6 +782,7 @@ class EmulatorViewModel @Inject constructor(
         val originalPrompt = pendingRecoveryRestore ?: _recoveryPrompt.value
         pendingRecoveryRestore = null
         automaticRecoveryInProgress = false
+        recoveryDisplayActivationPending = false
         _emulatorState.value = EmulatorState.RecoveryPending
         _recoveryPrompt.value = originalPrompt?.copy(cause = RecoveryCause.RestoreFailed(detail))
     }

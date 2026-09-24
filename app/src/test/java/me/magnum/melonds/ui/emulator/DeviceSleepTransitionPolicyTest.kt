@@ -52,4 +52,28 @@ class DeviceSleepTransitionPolicyTest {
             ),
         )
     }
+
+    @Test
+    fun activatesRecoveredDisplayWhenActivityIsVisible() {
+        assertEquals(
+            true,
+            shouldActivateRecoveredDisplay(
+                recoveryActivationPending = true,
+                screenOff = false,
+                activityResumed = true,
+            ),
+        )
+    }
+
+    @Test
+    fun defersRecoveredDisplayActivationWhileScreenIsOff() {
+        assertEquals(
+            false,
+            shouldActivateRecoveredDisplay(
+                recoveryActivationPending = true,
+                screenOff = true,
+                activityResumed = true,
+            ),
+        )
+    }
 }
