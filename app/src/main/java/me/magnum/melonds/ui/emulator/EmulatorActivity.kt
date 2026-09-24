@@ -626,8 +626,18 @@ class EmulatorActivity : AppCompatActivity() {
                             if (handleDeviceSleepTransition()) {
                                 return@collectLatest
                             }
-                            if (!isScreenOff() && viewModel.consumeOpenLidAfterRecovery()) {
+                            val canActivateRecoveredDisplay = shouldActivateRecoveredDisplay(
+                                recoveryActivationPending = viewModel.isRecoveryDisplayActivationPending(),
+                                screenOff = isScreenOff(),
+                                activityResumed = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED),
+                            )
+                            if (canActivateRecoveredDisplay &&
+                                viewModel.consumeRecoveryDisplayActivation()
+                            ) {
                                 melonTouchHandler.setLidClosed(false)
+                                choreographerFrameRenderer.startRendering()
+                                emulatorMotionManager.resume()
+                                stopService(Intent(this@EmulatorActivity, LidCloseService::class.java))
                             }
                             if (lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) &&
                                 !activeOverlays.hasActiveOverlays()
